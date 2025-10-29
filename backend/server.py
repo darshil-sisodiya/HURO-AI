@@ -403,6 +403,404 @@ async def get_chat_history(
         ]
     )
 
+# ==================== CHALLENGES ENDPOINTS ====================
+
+class ChallengeCreate(BaseModel):
+    challenge_type: str  # "hydration", "no_sugar", "mindful_morning", "exercise", "sleep"
+    duration_days: int
+    title: str
+    description: str
+
+class ChallengeResponse(BaseModel):
+    id: str
+    user_id: str
+    challenge_type: str
+    duration_days: int
+    title: str
+    description: str
+    start_date: datetime
+    end_date: datetime
+    completed_days: int
+    is_active: bool
+    is_completed: bool
+    badges: List[str]
+    created_at: datetime
+
+class ChallengeCheckIn(BaseModel):
+    challenge_id: str
+    notes: Optional[str] = None
+
+@api_router.post("/challenges/create", response_model=ChallengeResponse)
+async def create_challenge(
+    challenge: ChallengeCreate,
+    username: str = Depends(verify_token)
+):
+    user = await db.users.find_one({"username": username})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = str(user["_id"])
+    
+    start_date = datetime.utcnow()
+    end_date = start_date + timedelta(days=challenge.duration_days)
+    
+    challenge_doc = {
+        "user_id": user_id,
+        **challenge.dict(),
+        "start_date": start_date,
+        "end_date": end_date,
+        "completed_days": 0,
+        "is_active": True,
+        "is_completed": False,
+        "badges": [],
+        "check_ins": [],
+        "created_at": start_date
+    }
+    
+    result = await db.challenges.insert_one(challenge_doc)
+    
+    return ChallengeResponse(
+        id=str(result.inserted_id),
+        **{k: v for k, v in challenge_doc.items() if k != "_id"}
+    )
+
+@api_router.get("/challenges/active", response_model=List[ChallengeResponse])
+async def get_active_challenges(username: str = Depends(verify_token)):
+    user = await db.users.find_one({"username": username})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = str(user["_id"])
+    
+    challenges = await db.challenges.find({
+        "user_id": user_id,
+        "is_active": True
+    }).to_list(100)
+    
+    return [
+        ChallengeResponse(
+            id=str(c["_id"]),
+            **{k: v for k, v in c.items() if k != "_id"}
+        )
+        for c in challenges
+    ]
+
+@api_router.post("/challenges/checkin")
+async def challenge_checkin(
+    checkin: ChallengeCheckIn,
+    username: str = Depends(verify_token)
+):
+    user = await db.users.find_one({"username": username})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = str(user["_id"])
+    
+    try:
+        challenge_id = ObjectId(checkin.challenge_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid challenge ID")
+    
+    challenge = await db.challenges.find_one({
+        "_id": challenge_id,
+        "user_id": user_id
+    })
+    
+    if not challenge:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    
+    # Add check-in
+    completed_days = challenge["completed_days"] + 1
+    check_in_data = {
+        "date": datetime.utcnow(),
+        "notes": checkin.notes
+    }
+    
+    # Award badges
+    badges = challenge.get("badges", [])
+    if completed_days == 3 and "3_day_streak" not in badges:
+        badges.append("3_day_streak")
+    if completed_days == 7 and "week_warrior" not in badges:
+        badges.append("week_warrior")
+    if completed_days >= challenge["duration_days"]:
+        badges.append("challenge_completed")
+    
+    is_completed = completed_days >= challenge["duration_days"]
+    
+    await db.challenges.update_one(
+        {"_id": challenge_id},
+        {
+            "$set": {
+                "completed_days": completed_days,
+                "is_completed": is_completed,
+                "is_active": not is_completed,
+                "badges": badges
+            },
+            "$push": {"check_ins": check_in_data}
+        }
+    )
+    
+    # Generate AI feedback
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"challenge_{user_id}",
+            system_message="You are an encouraging fitness coach. Give brief, motivating feedback."
+        ).with_model("gemini", "gemini-2.0-flash")
+        
+        prompt = f"User completed day {completed_days} of {challenge['duration_days']} in their {challenge['title']} challenge. Give them a brief motivating message (1-2 sentences)."
+        user_message = UserMessage(text=prompt)
+        feedback = await chat.send_message(user_message)
+    except:
+        feedback = "Great job! Keep up the momentum!"
+    
+    return {
+        "success": True,
+        "completed_days": completed_days,
+        "badges": badges,
+        "is_completed": is_completed,
+        "ai_feedback": feedback
+    }
+
+# ==================== BODY MAP ENDPOINTS ====================
+
+class BodyMapSymptom(BaseModel):
+    body_part: str
+    pain_level: int  # 1-5
+    description: Optional[str] = None
+
+@api_router.post("/bodymap/analyze")
+async def analyze_symptom(
+    symptom: BodyMapSymptom,
+    username: str = Depends(verify_token)
+):
+    user = await db.users.find_one({"username": username})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = str(user["_id"])
+    
+    # Get user's health profile for context
+    profile = await db.health_profiles.find_one({"user_id": user_id})
+    
+    # Get recent symptoms
+    recent_symptoms = await db.timeline_entries.find({
+        "user_id": user_id,
+        "entry_type": "symptom"
+    }).sort("timestamp", -1).limit(5).to_list(5)
+    
+    context = f"Body part: {symptom.body_part}, Pain level: {symptom.pain_level}/5"
+    if symptom.description:
+        context += f", Description: {symptom.description}"
+    
+    if profile:
+        context += f"\\n\\nUser's health background: Stress level: {profile.get('stress_level')}, Exercise: {profile.get('exercise_frequency')}, Sleep: {profile.get('sleep_hours')}h"
+    
+    if recent_symptoms:
+        context += "\\n\\nRecent symptoms: "
+        for s in recent_symptoms[:3]:
+            context += f"{s.get('title')}, "
+    
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"bodymap_{user_id}",
+            system_message="You are a helpful health advisor. Provide general health information, not medical diagnosis."
+        ).with_model("gemini", "gemini-2.0-flash")
+        
+        prompt = f"""Based on this information: {context}
+
+Provide:
+1. Possible causes (2-3 common reasons)
+2. Safe home remedies (2-3 suggestions)
+3. When to see a doctor (warning signs)
+
+Keep it concise and easy to understand. Remember this is general information, not medical advice."""
+        
+        user_message = UserMessage(text=prompt)
+        analysis = await chat.send_message(user_message)
+        
+        # Save to database
+        symptom_doc = {
+            "user_id": user_id,
+            "body_part": symptom.body_part,
+            "pain_level": symptom.pain_level,
+            "description": symptom.description,
+            "analysis": analysis,
+            "timestamp": datetime.utcnow()
+        }
+        await db.body_map_entries.insert_one(symptom_doc)
+        
+        return {
+            "body_part": symptom.body_part,
+            "analysis": analysis,
+            "affected_areas": [symptom.body_part],  # Could expand to related areas
+            "severity": "high" if symptom.pain_level >= 4 else "moderate" if symptom.pain_level >= 2 else "low"
+        }
+    except Exception as e:
+        logging.error(f"Error analyzing symptom: {e}")
+        raise HTTPException(status_code=500, detail="Failed to analyze symptom")
+
+# ==================== INSIGHTS ENDPOINTS ====================
+
+@api_router.get("/insights/patterns")
+async def get_health_patterns(username: str = Depends(verify_token)):
+    user = await db.users.find_one({"username": username})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = str(user["_id"])
+    
+    # Get timeline entries from last 30 days
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    entries = await db.timeline_entries.find({
+        "user_id": user_id,
+        "timestamp": {"$gte": thirty_days_ago}
+    }).to_list(1000)
+    
+    # Analyze patterns
+    symptom_count = sum(1 for e in entries if e["entry_type"] == "symptom")
+    mood_entries = [e for e in entries if e["entry_type"] == "mood"]
+    sleep_entries = [e for e in entries if e["entry_type"] == "sleep"]
+    hydration_entries = [e for e in entries if e["entry_type"] == "hydration"]
+    
+    # Count streaks
+    stress_free_days = 0
+    for entry in mood_entries:
+        if "stress" not in entry.get("title", "").lower() and "anxious" not in entry.get("title", "").lower():
+            stress_free_days += 1
+    
+    # Generate AI insights
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"insights_{user_id}",
+            system_message="You are a health data analyst. Provide brief, actionable insights."
+        ).with_model("gemini", "gemini-2.0-flash")
+        
+        prompt = f"""Analyze this health data from the last 30 days:
+- Symptoms logged: {symptom_count}
+- Mood entries: {len(mood_entries)}
+- Sleep tracking: {len(sleep_entries)}
+- Hydration logs: {len(hydration_entries)}
+
+Provide 2-3 brief, actionable insights or predictions. Be encouraging but realistic."""
+        
+        user_message = UserMessage(text=prompt)
+        ai_insights = await chat.send_message(user_message)
+    except:
+        ai_insights = "Keep tracking your health to see patterns!"
+    
+    return {
+        "total_entries": len(entries),
+        "symptoms_this_month": symptom_count,
+        "stress_free_days": stress_free_days,
+        "hydration_logs": len(hydration_entries),
+        "ai_insights": ai_insights,
+        "trends": {
+            "symptom_trend": "increasing" if symptom_count > 10 else "stable",
+            "hydration_trend": "good" if len(hydration_entries) > 15 else "needs_improvement"
+        }
+    }
+
+# ==================== REMINDERS ENDPOINTS ====================
+
+class ReminderCreate(BaseModel):
+    reminder_type: str  # "hydration", "movement", "sleep", "custom"
+    frequency_hours: int
+    message: str
+    is_sarcastic: bool = False
+
+class ReminderResponse(BaseModel):
+    id: str
+    user_id: str
+    reminder_type: str
+    frequency_hours: int
+    message: str
+    is_sarcastic: bool
+    is_active: bool
+    last_sent: Optional[datetime]
+    created_at: datetime
+
+@api_router.post("/reminders/create", response_model=ReminderResponse)
+async def create_reminder(
+    reminder: ReminderCreate,
+    username: str = Depends(verify_token)
+):
+    user = await db.users.find_one({"username": username})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = str(user["_id"])
+    
+    reminder_doc = {
+        "user_id": user_id,
+        **reminder.dict(),
+        "is_active": True,
+        "last_sent": None,
+        "created_at": datetime.utcnow()
+    }
+    
+    result = await db.reminders.insert_one(reminder_doc)
+    
+    return ReminderResponse(
+        id=str(result.inserted_id),
+        **{k: v for k, v in reminder_doc.items() if k != "_id"}
+    )
+
+@api_router.get("/reminders/active", response_model=List[ReminderResponse])
+async def get_active_reminders(username: str = Depends(verify_token)):
+    user = await db.users.find_one({"username": username})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = str(user["_id"])
+    
+    reminders = await db.reminders.find({
+        "user_id": user_id,
+        "is_active": True
+    }).to_list(100)
+    
+    return [
+        ReminderResponse(
+            id=str(r["_id"]),
+            **{k: v for k, v in r.items() if k != "_id"}
+        )
+        for r in reminders
+    ]
+
+@api_router.post("/reminders/{reminder_id}/toggle")
+async def toggle_reminder(
+    reminder_id: str,
+    username: str = Depends(verify_token)
+):
+    user = await db.users.find_one({"username": username})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = str(user["_id"])
+    
+    try:
+        reminder_obj_id = ObjectId(reminder_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid reminder ID")
+    
+    reminder = await db.reminders.find_one({
+        "_id": reminder_obj_id,
+        "user_id": user_id
+    })
+    
+    if not reminder:
+        raise HTTPException(status_code=404, detail="Reminder not found")
+    
+    new_status = not reminder["is_active"]
+    await db.reminders.update_one(
+        {"_id": reminder_obj_id},
+        {"$set": {"is_active": new_status}}
+    )
+    
+    return {"success": True, "is_active": new_status}
+
 # ==================== HEALTH ENDPOINT ====================
 
 @api_router.get("/health")
