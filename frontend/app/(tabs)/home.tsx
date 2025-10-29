@@ -51,9 +51,11 @@ export default function Home() {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [insights, setInsights] = useState<any>(null);
 
   useEffect(() => {
     loadEntries();
+    loadQuickInsights();
   }, []);
 
   const loadEntries = async () => {
