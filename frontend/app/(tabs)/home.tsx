@@ -74,6 +74,19 @@ export default function Home() {
     }
   };
 
+  const loadQuickInsights = async () => {
+    try {
+      const response = await axios.get(`${BACKEND_URL}/api/insights/patterns`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      setInsights(response.data);
+    } catch (error) {
+      console.error('Error loading insights:', error);
+    }
+  };
+
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     loadEntries();
