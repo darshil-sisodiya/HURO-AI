@@ -14,10 +14,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
-import Constants from 'expo-constants';
+import { API_BASE_URL } from '../../utils/api';
 import { format } from 'date-fns';
 
-const BACKEND_URL = Constants.expoConfig?.extra?.EXPO_PUBLIC_BACKEND_URL || process.env.EXPO_PUBLIC_BACKEND_URL;
+const BACKEND_URL = API_BASE_URL;
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -39,7 +39,7 @@ export default function Chat() {
 
   const loadChatHistory = async () => {
     try {
-      const response = await axios.get(`${BACKEND_URL}/api/chat/history`, {
+  const response = await axios.get(`${BACKEND_URL}/api/chat/history`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },

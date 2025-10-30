@@ -15,10 +15,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
-import Constants from 'expo-constants';
+import { API_BASE_URL } from '../../utils/api';
 import { format } from 'date-fns';
 
-const BACKEND_URL = Constants.expoConfig?.extra?.EXPO_PUBLIC_BACKEND_URL || process.env.EXPO_PUBLIC_BACKEND_URL;
+// Centralized API base URL helper handles device/emulator URLs
+const BACKEND_URL = API_BASE_URL;
 
 type EntryType = 'symptom' | 'mood' | 'medicine' | 'sleep' | 'hydration' | 'note';
 
@@ -60,7 +61,7 @@ export default function Home() {
 
   const loadEntries = async () => {
     try {
-      const response = await axios.get(`${BACKEND_URL}/api/timeline/entries`, {
+  const response = await axios.get(`${BACKEND_URL}/api/timeline/entries`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -76,7 +77,7 @@ export default function Home() {
 
   const loadQuickInsights = async () => {
     try {
-      const response = await axios.get(`${BACKEND_URL}/api/insights/patterns`, {
+  const response = await axios.get(`${BACKEND_URL}/api/insights/patterns`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },

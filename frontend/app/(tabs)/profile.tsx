@@ -13,9 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useRouter } from 'expo-router';
 import axios from 'axios';
-import Constants from 'expo-constants';
-
-const BACKEND_URL = Constants.expoConfig?.extra?.EXPO_PUBLIC_BACKEND_URL || process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_BASE_URL } from '../../utils/api';
 
 interface HealthProfile {
   sleep_pattern: string;
@@ -40,7 +38,7 @@ export default function Profile() {
 
   const loadProfile = async () => {
     try {
-      const response = await axios.get(`${BACKEND_URL}/api/health/profile`, {
+  const response = await axios.get(`${API_BASE_URL}/api/health/profile`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },

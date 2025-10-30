@@ -14,9 +14,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
-import Constants from 'expo-constants';
+import { API_BASE_URL } from '../../utils/api';
 
-const BACKEND_URL = Constants.expoConfig?.extra?.EXPO_PUBLIC_BACKEND_URL || process.env.EXPO_PUBLIC_BACKEND_URL;
+const BACKEND_URL = API_BASE_URL;
 
 const bodyParts = [
   { id: 'head', label: 'Head', icon: 'head' as keyof typeof Ionicons.glyphMap, position: { top: 50, left: '42%' } },

@@ -1,4 +1,5 @@
 import React from 'react';
+import '../utils/axiosDebug';
 import { Stack } from 'expo-router';
 import { AuthProvider } from '../contexts/AuthContext';
 

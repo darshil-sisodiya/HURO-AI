@@ -13,9 +13,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
-import Constants from 'expo-constants';
-
-const BACKEND_URL = Constants.expoConfig?.extra?.EXPO_PUBLIC_BACKEND_URL || process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_BASE_URL } from '../../utils/api';
 
 type OptionType = {
   value: string;
@@ -85,7 +83,7 @@ export default function Questions() {
     setIsLoading(true);
     try {
       await axios.post(
-        `${BACKEND_URL}/api/health/profile`,
+        `${API_BASE_URL}/api/health/profile`,
         {
           sleep_pattern: sleepPattern,
           sleep_hours: parseInt(sleepHours),

@@ -11,9 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
-import Constants from 'expo-constants';
-
-const BACKEND_URL = Constants.expoConfig?.extra?.EXPO_PUBLIC_BACKEND_URL || process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_BASE_URL } from '../../utils/api';
 
 export default function Insights() {
   const { token } = useAuth();
@@ -27,7 +25,7 @@ export default function Insights() {
 
   const loadInsights = async () => {
     try {
-      const response = await axios.get(`${BACKEND_URL}/api/insights/patterns`, {
+  const response = await axios.get(`${API_BASE_URL}/api/insights/patterns`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },

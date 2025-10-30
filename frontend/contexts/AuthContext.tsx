@@ -1,9 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
-import Constants from 'expo-constants';
-
-const BACKEND_URL = Constants.expoConfig?.extra?.EXPO_PUBLIC_BACKEND_URL || process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_BASE_URL } from '../utils/api';
 
 interface AuthContextType {
   token: string | null;
@@ -42,7 +40,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async (username: string, password: string) => {
     try {
-      const response = await axios.post(`${BACKEND_URL}/api/auth/login`, {
+  const response = await axios.post(`${API_BASE_URL}/api/auth/login`, {
         username,
         password
       });
@@ -59,7 +57,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const register = async (username: string, password: string) => {
     try {
-      const response = await axios.post(`${BACKEND_URL}/api/auth/register`, {
+  const response = await axios.post(`${API_BASE_URL}/api/auth/register`, {
         username,
         password
       });
