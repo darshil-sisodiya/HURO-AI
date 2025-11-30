@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -13,9 +13,14 @@ import jwt
 from passlib.hash import bcrypt
 import asyncio
 import json
+import base64
+from io import BytesIO
+from PIL import Image
 
 # Database (MySQL, async)
 import aiomysql
+
+from health_scoring import compute_health_score
 
 # Google Gemini
 import google.generativeai as genai
@@ -28,6 +33,8 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-1.5-flash')
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+
+# Note: Using Gemini Vision for OCR (FREE - no billing required!)
 
 # MySQL connection (async pool)
 MYSQL_HOST = os.environ.get('MYSQL_HOST', 'localhost')
@@ -243,6 +250,28 @@ async def init_db(conn: aiomysql.Connection):
                 description TEXT NULL,
                 analysis LONGTEXT NOT NULL,
                 timestamp DATETIME NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """
+        )
+        # prescriptions
+        await cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prescriptions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                image_path VARCHAR(512) NULL,
+                extracted_text LONGTEXT NOT NULL,
+                medication_name TEXT NULL,
+                dosage TEXT NULL,
+                frequency TEXT NULL,
+                timing TEXT NULL,
+                purpose TEXT NULL,
+                side_effects TEXT NULL,
+                interactions TEXT NULL,
+                personalized_advice LONGTEXT NULL,
+                ai_analysis LONGTEXT NOT NULL,
+                created_at DATETIME NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """
@@ -654,6 +683,23 @@ async def send_chat_message(
         context += "\n\nRecent Health Timeline:\n"
         for entry in recent_entries[:5]:
             context += f"- {entry.get('entry_type')}: {entry.get('title')}\n"
+    # Include recent prescriptions in chat context so assistant can reference them
+    try:
+        recent_pres = await fetch_all(
+            "SELECT medication_name, dosage, frequency, timing, personalized_advice FROM prescriptions WHERE user_id=%s ORDER BY created_at DESC LIMIT 5",
+            (user_id,)
+        )
+        if recent_pres:
+            context += "\n\nRecent Prescriptions:\n"
+            for p in recent_pres:
+                med = p.get('medication_name') or 'Unknown'
+                dosage = p.get('dosage') or ''
+                freq = p.get('frequency') or p.get('timing') or ''
+                context += f"- {med}: {dosage} {freq}\n"
+            context += "\nWhen relevant, you may reference these prescriptions and suggest actions like 'take this medicine from your prescription' while reminding the user to follow doctor's instructions."
+    except Exception:
+        # Non-fatal: continue without prescriptions
+        pass
     
     # Save user message
     user_ts = to_dt(datetime.utcnow())
@@ -1004,6 +1050,20 @@ Keep it concise and easy to understand. Remember this is general information, no
 
 # ==================== INSIGHTS ENDPOINTS ====================
 
+
+async def _get_recent_timeline_entries(user_id: int, days: int = 7) -> List[Dict[str, Any]]:
+    since = to_dt(datetime.utcnow() - timedelta(days=days))
+    return await fetch_all(
+        "SELECT * FROM timeline_entries WHERE user_id=%s AND timestamp >= %s ORDER BY timestamp DESC",
+        (user_id, since),
+    )
+
+
+async def _build_health_score_from_entries(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    breakdown = compute_health_score(entries)
+    return {"score": breakdown.score, "label": breakdown.label, "reason": breakdown.reason}
+
+
 @api_router.get("/insights/patterns")
 async def get_health_patterns(username: str = Depends(verify_token)):
     user = await fetch_one("SELECT id FROM users WHERE username=%s", (username,))
@@ -1012,26 +1072,46 @@ async def get_health_patterns(username: str = Depends(verify_token)):
 
     user_id = int(user["id"])
 
-    # Get timeline entries from last 30 days
+    # Get timeline entries from last 30 days for general stats
     thirty_days_ago = to_dt(datetime.utcnow() - timedelta(days=30))
     entries = await fetch_all(
         "SELECT * FROM timeline_entries WHERE user_id=%s AND timestamp >= %s",
         (user_id, thirty_days_ago),
     )
-    
+
     # Analyze patterns
     symptom_count = sum(1 for e in entries if e["entry_type"] == "symptom")
     mood_entries = [e for e in entries if e["entry_type"] == "mood"]
     sleep_entries = [e for e in entries if e["entry_type"] == "sleep"]
     hydration_entries = [e for e in entries if e["entry_type"] == "hydration"]
     
-    # Count streaks
-    stress_free_days = 0
+    # Count stress-free days using structured mood tags.
+    # A day is considered stress-free if all logged moods for that date
+    # are non-negative (no Stressed/Anxious/Low energy) regardless of title text.
+    stress_free_dates = set()
+    stressed_dates = set()
     for entry in mood_entries:
-        if "stress" not in entry.get("title", "").lower() and "anxious" not in entry.get("title", "").lower():
-            stress_free_days += 1
+        ts = entry.get("timestamp")
+        if not isinstance(ts, datetime):
+            continue
+        day = ts.date()
+        try:
+            tags_raw = entry.get("tags") or "[]"
+            tags_list = json.loads(tags_raw) if isinstance(tags_raw, (str, bytes)) else tags_raw
+        except Exception:
+            tags_list = []
+        moods = [str(t).split(":", 1)[1] for t in tags_list if str(t).startswith("mood:")]
+        moods_lower = {m.strip().lower() for m in moods}
+        if any(m in {"stressed", "anxious", "low energy"} for m in moods_lower):
+            stressed_dates.add(day)
+        elif moods:
+            # Only mark as potentially stress-free if we saw at least one mood tag
+            stress_free_dates.add(day)
+
+    # Remove any days that also had stressed moods
+    stress_free_days = len(stress_free_dates - stressed_dates)
     
-    # Generate AI insights
+    # Generate AI insights (30-day patterns)
     try:
         prompt = f"""Analyze this health data from the last 30 days:
 - Symptoms logged: {symptom_count}
@@ -1046,7 +1126,11 @@ Provide 2-3 brief, actionable insights or predictions. Be encouraging but realis
         )
     except Exception:
         ai_insights = "Keep tracking your health to see patterns!"
-    
+
+    # Compute AI health score from last 7 days of logs
+    recent_entries = await _get_recent_timeline_entries(user_id, days=7)
+    ai_health_score = await _build_health_score_from_entries(recent_entries)
+
     return {
         "total_entries": len(entries),
         "symptoms_this_month": symptom_count,
@@ -1055,8 +1139,9 @@ Provide 2-3 brief, actionable insights or predictions. Be encouraging but realis
         "ai_insights": ai_insights,
         "trends": {
             "symptom_trend": "increasing" if symptom_count > 10 else "stable",
-            "hydration_trend": "good" if len(hydration_entries) > 15 else "needs_improvement"
-        }
+            "hydration_trend": "good" if len(hydration_entries) > 15 else "needs_improvement",
+        },
+        "ai_health_score": ai_health_score,
     }
 
 # ==================== REMINDERS ENDPOINTS ====================
@@ -1179,6 +1264,598 @@ async def toggle_reminder(
     )
 
     return {"success": True, "is_active": new_status}
+
+# ==================== PRESCRIPTION ANALYSIS ENDPOINTS ====================
+
+class PrescriptionAnalysisResponse(BaseModel):
+    id: str
+    user_id: str
+    medication_name: str
+    dosage: Optional[str]
+    frequency: Optional[str]
+    timing: Optional[str]
+    purpose: Optional[str]
+    side_effects: Optional[str]
+    interactions: Optional[str]
+    personalized_advice: Optional[str]
+    extracted_text: str
+    ai_analysis: str
+    created_at: datetime
+
+async def extract_text_from_image(image_data: bytes) -> str:
+    """Extract text from image using Gemini Vision (FREE - no billing required!)."""
+    
+    try:
+        # Convert image to base64 for Gemini
+        import base64
+        image_base64 = base64.b64encode(image_data).decode('utf-8')
+        
+        # Use Gemini with vision capabilities to extract text
+        model = genai.GenerativeModel(model_name=GEMINI_MODEL)
+        
+        # Create the image part
+        image_parts = [
+            {
+                "mime_type": "image/jpeg",  # Adjust if needed
+                "data": image_base64
+            }
+        ]
+        
+        prompt = """Extract ALL text from this prescription image exactly as written. 
+Include:
+- Medication names
+- Dosages
+- Doctor's instructions
+- Frequencies
+- Any other text visible
+
+Return ONLY the extracted text, nothing else."""
+        
+        response = await model.generate_content_async([prompt, {"inline_data": {"mime_type": "image/jpeg", "data": image_base64}}])
+        
+        extracted_text = response.text.strip()
+        
+        if not extracted_text or len(extracted_text) < 10:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not extract sufficient text from image. Please ensure the prescription is clear and readable."
+            )
+        
+        logging.info(f"✅ Successfully extracted {len(extracted_text)} characters using Gemini Vision")
+        return extracted_text
+        
+    except Exception as e:
+        logging.error(f"❌ Error extracting text from image: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to extract text from image: {str(e)}"
+        )
+
+async def analyze_prescription_with_ai(
+    extracted_text: str,
+    user_health_profile: Optional[Dict[str, Any]],
+    recent_logs: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Analyze prescription using AI based on extracted text and user's health data."""
+    
+    # Build context with user's health information
+    context = f"Prescription Text Extracted (OCR):\n{extracted_text}\n\n"
+    
+    context += "IMPORTANT: Use the medication names EXACTLY as extracted above - they are correct.\n\n"
+    
+    if user_health_profile:
+        context += "User's Health Profile:\n"
+        context += f"- Sleep: {user_health_profile.get('sleep_pattern')} ({user_health_profile.get('sleep_hours')}h)\n"
+        context += f"- Stress Level: {user_health_profile.get('stress_level')}\n"
+        context += f"- Exercise: {user_health_profile.get('exercise_frequency')}\n"
+        context += f"- Diet: {user_health_profile.get('diet_type')}\n"
+        if user_health_profile.get('existing_conditions'):
+            context += f"- Existing Conditions: {user_health_profile.get('existing_conditions')}\n"
+    
+    if recent_logs:
+        context += "\nRecent Health Logs:\n"
+        for log in recent_logs[:10]:
+            context += f"- {log.get('entry_type')}: {log.get('title')} (severity: {log.get('severity', 'N/A')})\n"
+    
+    prompt = f"""{context}
+
+Analyze the prescription text above. For EACH medication found:
+
+Use the medication names  as written in the extracted text but if the writing is not CLEAR then only do your own research and provide the correct  name.
+
+Return a JSON object with this structure:
+{{
+  "medications": [
+    {{
+      "medication_name": "name from prescription (Research and verify whether the name corresponds to a real, legally recognized medicine if not then do your research to the closest name from the extracted text and display it.)",
+      "dosage": "Dosage information (if not mentioned in prescreption or is not very clear or if whatever writen does not make sense to be the dosage then do your own research and provide the correct dosage but give a disclaimer that this is based on research and not from the prescription but if clearly mentioned in prescription then use that)",
+      "frequency": "How often to take (e.g., 'twice daily', 'every 8 hours' if not mentioned in prescreption or is not very clear or if whatever writen does not make sense to be the frequency then do your own research and provide the correct frequency but give a disclaimer that this is based on research and not from the prescription but if clearly mentioned in prescription then use that)",
+      "timing": "Best time to take (e.g., 'with meals', 'before bedtime')",
+      "purpose": "What this medication treats",
+      "side_effects": "Common side effects to watch for",
+      "interactions": "Interactions with food, lifestyle, or the user's conditions",
+      "personalized_advice": "Specific advice based on user's health profile"
+    }}
+  ],
+  "general_advice": "Overall advice for taking these medications together (if multiple)"
+}}
+
+Return ONLY valid JSON. If a field is unknown, do your own research and fill in with valid information.
+"""
+
+    try:
+        response = await gemini_generate(
+            system_message="You are an expert pharmacist who corrects OCR errors in prescription text and provides detailed medication guidance. Always return valid JSON.",
+            user_text=prompt
+        )
+        
+        # Try to parse JSON response
+        try:
+            # Remove markdown code blocks if present
+            cleaned_response = response.strip()
+            if cleaned_response.startswith('```json'):
+                cleaned_response = cleaned_response[7:]
+            if cleaned_response.startswith('```'):
+                cleaned_response = cleaned_response[3:]
+            if cleaned_response.endswith('```'):
+                cleaned_response = cleaned_response[:-3]
+            cleaned_response = cleaned_response.strip()
+            
+            analysis_data = json.loads(cleaned_response)
+            
+            # Convert new format to flat format for backward compatibility
+            medications = analysis_data.get('medications', [])
+            if medications:
+                # Combine all medications into single fields using EXACT names from OCR
+                med_names = [m.get('medication_name', 'Unknown') for m in medications]
+                dosages = [m.get('dosage') for m in medications if m.get('dosage')]
+                frequencies = [m.get('frequency') for m in medications if m.get('frequency')]
+                timings = [m.get('timing') for m in medications if m.get('timing')]
+                purposes = [m.get('purpose') for m in medications if m.get('purpose')]
+                
+                # Build formatted output grouped by medication
+                formatted_sections = []
+                for i, med in enumerate(medications, 1):
+                    med_section = f"**Medication {i}: {med.get('medication_name', 'Unknown')}**\n\n"
+                    if med.get('dosage'):
+                        med_section += f"**Dosage:** {med.get('dosage')}\n\n"
+                    if med.get('frequency'):
+                        med_section += f"**Frequency:** {med.get('frequency')}\n\n"
+                    if med.get('timing'):
+                        med_section += f"**Timing:** {med.get('timing')}\n\n"
+                    if med.get('purpose'):
+                        med_section += f"**Purpose:** {med.get('purpose')}\n\n"
+                    if med.get('side_effects'):
+                        med_section += f"**Side Effects:** {med.get('side_effects')}\n\n"
+                    if med.get('interactions'):
+                        med_section += f"**Interactions:** {med.get('interactions')}\n\n"
+                    if med.get('personalized_advice'):
+                        med_section += f"**Personalized Advice:** {med.get('personalized_advice')}\n\n"
+                    formatted_sections.append(med_section)
+                
+                formatted_analysis = "\n---\n\n".join(formatted_sections)
+                if analysis_data.get('general_advice'):
+                    formatted_analysis += f"\n---\n\n**General Advice:**\n\n{analysis_data.get('general_advice')}"
+                
+                return {
+                    'medication_name': ', '.join(med_names),
+                    'dosage': ', '.join(dosages) if dosages else None,
+                    'frequency': ', '.join(frequencies) if frequencies else None,
+                    'timing': ', '.join(timings) if timings else None,
+                    'purpose': '; '.join(purposes) if purposes else None,
+                    'side_effects': None,  # Included in formatted output
+                    'interactions': None,  # Included in formatted output
+                    'personalized_advice': formatted_analysis,
+                    'full_analysis': response,
+                    'medications': medications  # Keep original structure
+                }
+            else:
+                # Fallback if no medications array
+                analysis_data['full_analysis'] = response
+                return analysis_data
+                
+        except json.JSONDecodeError:
+            # If JSON parsing fails, return structured data from text
+            return {
+                'medication_name': 'See full analysis',
+                'dosage': None,
+                'frequency': None,
+                'timing': None,
+                'purpose': None,
+                'side_effects': None,
+                'interactions': None,
+                'personalized_advice': response,
+                'full_analysis': response
+            }
+    except Exception as e:
+        logging.error(f"Error analyzing prescription with AI: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to analyze prescription: {str(e)}")
+
+@api_router.post("/prescriptions/upload", response_model=PrescriptionAnalysisResponse)
+async def upload_prescription(
+    file: UploadFile = File(...),
+    username: str = Depends(verify_token)
+):
+    """Upload a prescription image, extract text, and get AI analysis."""
+    
+    # Verify user
+    user = await fetch_one("SELECT id FROM users WHERE username=%s", (username,))
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = int(user["id"])
+    
+    # Validate file type
+    if not file.content_type or not file.content_type.startswith('image/'):
+        raise HTTPException(status_code=400, detail="File must be an image")
+    
+    try:
+        # Read image data
+        image_data = await file.read()
+        
+        # Extract text from image
+        extracted_text = await extract_text_from_image(image_data)
+        
+        if not extracted_text or len(extracted_text) < 10:
+            raise HTTPException(
+                status_code=400, 
+                detail="Could not extract sufficient text from image. Please ensure the image is clear and readable."
+            )
+        
+        # Get user's health profile
+        profile = await fetch_one("SELECT * FROM health_profiles WHERE user_id=%s", (user_id,))
+        
+        # Get recent timeline entries
+        recent_logs = await fetch_all(
+            "SELECT * FROM timeline_entries WHERE user_id=%s ORDER BY timestamp DESC LIMIT 20",
+            (user_id,)
+        )
+        
+        # Analyze with AI
+        analysis = await analyze_prescription_with_ai(
+            extracted_text=extracted_text,
+            user_health_profile=dict(profile) if profile else None,
+            recent_logs=[dict(log) for log in recent_logs]
+        )
+        
+        # Save to database
+        created_at = to_dt(datetime.utcnow())
+        
+        # Ensure all values are strings or None (convert any dicts to JSON strings)
+        def to_string(val):
+            if val is None:
+                return None
+            if isinstance(val, (dict, list)):
+                return json.dumps(val)
+            return str(val)
+        
+        prescription_id = await execute(
+            """
+            INSERT INTO prescriptions (
+                user_id, image_path, extracted_text, medication_name, dosage, frequency, 
+                timing, purpose, side_effects, interactions, personalized_advice, 
+                ai_analysis, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                user_id,
+                None,  # image_path - we're not storing the image file currently
+                extracted_text,
+                to_string(analysis.get('medication_name', 'Unknown')),
+                to_string(analysis.get('dosage')),
+                to_string(analysis.get('frequency')),
+                to_string(analysis.get('timing')),
+                to_string(analysis.get('purpose')),
+                to_string(analysis.get('side_effects')),
+                to_string(analysis.get('interactions')),
+                to_string(analysis.get('personalized_advice')),
+                to_string(analysis.get('full_analysis', '')),
+                created_at
+            )
+        )
+        
+        # Helper to convert lists to strings for response
+        def format_for_response(val):
+            if val is None:
+                return None
+            if isinstance(val, list):
+                return ', '.join(str(v) for v in val if v)
+            if isinstance(val, dict):
+                return json.dumps(val)
+            return str(val)
+        
+        return PrescriptionAnalysisResponse(
+            id=str(prescription_id),
+            user_id=str(user_id),
+            medication_name=format_for_response(analysis.get('medication_name', 'Unknown')),
+            dosage=format_for_response(analysis.get('dosage')),
+            frequency=format_for_response(analysis.get('frequency')),
+            timing=format_for_response(analysis.get('timing')),
+            purpose=format_for_response(analysis.get('purpose')),
+            side_effects=format_for_response(analysis.get('side_effects')),
+            interactions=format_for_response(analysis.get('interactions')),
+            personalized_advice=format_for_response(analysis.get('personalized_advice')),
+            extracted_text=extracted_text,
+            ai_analysis=analysis.get('full_analysis', ''),
+            created_at=created_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error processing prescription: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to process prescription: {str(e)}")
+
+@api_router.get("/prescriptions/history", response_model=List[PrescriptionAnalysisResponse])
+async def get_prescription_history(
+    limit: int = 20,
+    username: str = Depends(verify_token)
+):
+    """Get user's prescription history."""
+    
+    user = await fetch_one("SELECT id FROM users WHERE username=%s", (username,))
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = int(user["id"])
+    
+    prescriptions = await fetch_all(
+        """
+        SELECT * FROM prescriptions 
+        WHERE user_id=%s 
+        ORDER BY created_at DESC 
+        LIMIT %s
+        """,
+        (user_id, limit)
+    )
+    
+    results = []
+    for p in prescriptions:
+        results.append(
+            PrescriptionAnalysisResponse(
+                id=str(p["id"]),
+                user_id=str(p["user_id"]),
+                medication_name=p["medication_name"],
+                dosage=p.get("dosage"),
+                frequency=p.get("frequency"),
+                timing=p.get("timing"),
+                purpose=p.get("purpose"),
+                side_effects=p.get("side_effects"),
+                interactions=p.get("interactions"),
+                personalized_advice=p.get("personalized_advice"),
+                extracted_text=p["extracted_text"],
+                ai_analysis=p["ai_analysis"],
+                created_at=p["created_at"]
+            )
+        )
+    
+    return results
+
+@api_router.get("/prescriptions/{prescription_id}", response_model=PrescriptionAnalysisResponse)
+async def get_prescription(
+    prescription_id: str,
+    username: str = Depends(verify_token)
+):
+    """Get a specific prescription by ID."""
+    
+    user = await fetch_one("SELECT id FROM users WHERE username=%s", (username,))
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = int(user["id"])
+    
+    try:
+        prescription_id_int = int(prescription_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid prescription ID")
+    
+    prescription = await fetch_one(
+        "SELECT * FROM prescriptions WHERE id=%s AND user_id=%s",
+        (prescription_id_int, user_id)
+    )
+    
+    if not prescription:
+        raise HTTPException(status_code=404, detail="Prescription not found")
+    
+    return PrescriptionAnalysisResponse(
+        id=str(prescription["id"]),
+        user_id=str(prescription["user_id"]),
+        medication_name=prescription["medication_name"],
+        dosage=prescription.get("dosage"),
+        frequency=prescription.get("frequency"),
+        timing=prescription.get("timing"),
+        purpose=prescription.get("purpose"),
+        side_effects=prescription.get("side_effects"),
+        interactions=prescription.get("interactions"),
+        personalized_advice=prescription.get("personalized_advice"),
+        extracted_text=prescription["extracted_text"],
+        ai_analysis=prescription["ai_analysis"],
+        created_at=prescription["created_at"]
+    )
+
+# ==================== HEALTH REPORT GENERATION ====================
+
+from pdf_generator import create_health_report_pdf
+from fastapi.responses import StreamingResponse
+
+@api_router.post("/health/generate-report")
+@api_router.get("/health/generate-report")
+async def generate_health_report(
+    token: str = None
+):
+    """Generate a comprehensive PDF health report for the user."""
+    # Accept token from query parameter or Authorization header
+    if token:
+        from fastapi.security import HTTPAuthorizationCredentials as Creds
+        credentials = Creds(scheme="Bearer", credentials=token)
+        username = await verify_token(credentials)
+    else:
+        # Fall back to header-based auth
+        raise HTTPException(status_code=401, detail="Token required")
+    
+    # Fetch user
+    user = await fetch_one("SELECT * FROM users WHERE username=%s", (username,))
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_id = int(user["id"])
+    
+    try:
+        # Fetch health profile
+        profile = await fetch_one(
+            "SELECT * FROM health_profiles WHERE user_id=%s",
+            (user_id,)
+        )
+        
+        if not profile:
+            raise HTTPException(status_code=404, detail="Health profile not found")
+        
+        profile_data = dict(profile)
+        
+        # Fetch all timeline entries
+        entries = await fetch_all(
+            """SELECT * FROM timeline_entries 
+               WHERE user_id=%s 
+               ORDER BY timestamp DESC""",
+            (user_id,)
+        )
+        
+        timeline_entries = []
+        for entry in entries:
+            entry_dict = dict(entry)
+            # Convert datetime to ISO string
+            if entry_dict.get('timestamp') and isinstance(entry_dict['timestamp'], datetime):
+                entry_dict['timestamp'] = entry_dict['timestamp'].isoformat()
+            if entry_dict.get('created_at') and isinstance(entry_dict['created_at'], datetime):
+                entry_dict['created_at'] = entry_dict['created_at'].isoformat()
+            # Parse tags if they're JSON string
+            if entry_dict.get('tags'):
+                try:
+                    if isinstance(entry_dict['tags'], str):
+                        entry_dict['tags'] = json.loads(entry_dict['tags'])
+                except:
+                    entry_dict['tags'] = []
+            timeline_entries.append(entry_dict)
+        
+        # Fetch insights data
+        insights = await get_health_patterns(username)
+        
+        # Get health score
+        recent_entries = await _get_recent_timeline_entries(user_id, days=7)
+        health_score_breakdown = compute_health_score(recent_entries)
+        health_score_data = {
+            'score': health_score_breakdown.score,
+            'label': health_score_breakdown.label,
+            'reason': health_score_breakdown.reason
+        }
+        
+        # Generate AI summary using Gemini
+        summary_prompt = f"""
+        Based on this health data, provide a comprehensive medical summary for a patient report 
+        that can be shown to a doctor. Be professional, clear, and concise.
+        
+        Patient: {username}
+        
+        Health Profile:
+        - Sleep: {profile_data.get('sleep_pattern', 'N/A')} pattern, {profile_data.get('sleep_hours', 'N/A')} hours
+        - Hydration: {profile_data.get('hydration_level', 'N/A')}
+        - Stress: {profile_data.get('stress_level', 'N/A')}
+        - Exercise: {profile_data.get('exercise_frequency', 'N/A')}
+        - Diet: {profile_data.get('diet_type', 'N/A')}
+        
+        Recent Health Metrics (30 days):
+        - Total health entries: {insights.get('total_entries', 0)}
+        - Symptoms logged: {insights.get('symptoms_this_month', 0)}
+        - Stress-free days: {insights.get('stress_free_days', 0)}
+        - Hydration logs: {insights.get('hydration_logs', 0)}
+        - Health score: {health_score_data.get('score', 0)}/100 ({health_score_data.get('label', 'N/A')})
+        
+        Recent entries (last 10):
+        {chr(10).join([f"- {e.get('entry_type', 'N/A')}: {e.get('title', 'N/A')} ({str(e.get('timestamp', 'N/A'))[:10]})" for e in timeline_entries[:10]])}
+        
+        Provide a 2-3 paragraph professional medical summary highlighting key patterns, 
+        concerns, and positive trends. Focus on actionable insights for healthcare providers.
+        """
+        
+        try:
+            ai_summary = await gemini_generate(
+                system_message="You are a medical professional creating a health summary for a patient report.",
+                user_text=summary_prompt
+            )
+        except Exception as e:
+            logger.error(f"Gemini generation failed: {e}")
+            ai_summary = f"""
+            Health Summary for {username}:
+            
+            The patient has logged {insights.get('total_entries', 0)} health entries over the past 30 days, 
+            demonstrating active health monitoring. Current health score is {health_score_data.get('score', 0)}/100, 
+            classified as {health_score_data.get('label', 'N/A')}. 
+            
+            {insights.get('symptoms_this_month', 0)} symptoms have been recorded, with {insights.get('stress_free_days', 0)} 
+            stress-free days reported. Regular hydration tracking shows {insights.get('hydration_logs', 0)} logs.
+            
+            This report provides a comprehensive overview of self-reported health data and should be reviewed 
+            with the patient for clinical interpretation.
+            """
+        
+        # Fetch recent prescriptions to include in the report
+        try:
+            pres_rows = await fetch_all(
+                "SELECT * FROM prescriptions WHERE user_id=%s ORDER BY created_at DESC LIMIT %s",
+                (user_id, 5),
+            )
+        except Exception:
+            pres_rows = []
+
+        prescriptions = []
+        for p in pres_rows:
+            pr = dict(p)
+            # Keep original fields; some fields may be JSON strings
+            # Try to parse fields that might be JSON
+            for key in ['medication_name', 'dosage', 'frequency', 'timing', 'personalized_advice', 'ai_analysis']:
+                val = pr.get(key)
+                if isinstance(val, str):
+                    # leave as-is; it may already be a readable string
+                    pr[key] = val
+            prescriptions.append(pr)
+
+        # Create a short prescriptions AI summary to display in report
+        prescription_ai_summary = None
+        try:
+            if prescriptions:
+                meds_list = [p.get('medication_name') or 'Unknown' for p in prescriptions]
+                pres_prompt = f"Provide a 2-3 sentence professional summary of the following prescriptions and any high-level safety notes or common interactions. Medications: {', '.join(meds_list)}. Keep it concise for inclusion in a medical report."
+                prescription_ai_summary = await gemini_generate(
+                    system_message="You are a concise clinical pharmacist summarizing prescriptions for a patient report.",
+                    user_text=pres_prompt,
+                )
+        except Exception:
+            prescription_ai_summary = None
+
+        # Generate PDF
+        pdf_buffer = create_health_report_pdf(
+            username=username,
+            profile_data=profile_data,
+            timeline_entries=timeline_entries,
+            insights_data=insights,
+            ai_summary=ai_summary,
+            health_score_data=health_score_data,
+            prescriptions=prescriptions,
+            prescription_ai_summary=prescription_ai_summary,
+        )
+        
+        # Return PDF as streaming response
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=health_report_{username}_{datetime.now().strftime('%Y%m%d')}.pdf"
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Error generating health report: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate health report: {str(e)}")
 
 # ==================== HEALTH ENDPOINT ====================
 

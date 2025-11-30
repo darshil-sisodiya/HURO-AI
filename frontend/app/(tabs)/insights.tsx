@@ -6,12 +6,17 @@ import {
   ScrollView,
   RefreshControl,
   ActivityIndicator,
+  TouchableOpacity,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
 import { API_BASE_URL } from '../../utils/api';
+import * as WebBrowser from 'expo-web-browser';
+import { MarkdownText } from '../../components/MarkdownText';
+import { LinearGradient } from 'expo-linear-gradient';
+import { colors, spacing } from '../../constants/theme';
 
 export default function Insights() {
   const { token } = useAuth();
@@ -36,6 +41,16 @@ export default function Insights() {
     } finally {
       setIsLoading(false);
       setRefreshing(false);
+    }
+  };
+
+  const openHealthReport = async () => {
+    try {
+      // Server expects token via query param as implemented
+      const url = `${API_BASE_URL}/api/health/generate-report?token=${encodeURIComponent(String(token))}`;
+      await WebBrowser.openBrowserAsync(url);
+    } catch (e) {
+      console.error('Failed to open health report:', e);
     }
   };
 
@@ -80,14 +95,21 @@ export default function Insights() {
 
   if (isLoading) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color="#6366F1" />
-      </View>
+      <LinearGradient
+        colors={colors.backgroundGradient}
+        style={styles.centerContainer}
+      >
+        <ActivityIndicator size="large" color={colors.accentPrimary} />
+      </LinearGradient>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <LinearGradient
+      colors={colors.backgroundGradient}
+      style={styles.container}
+    >
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Health Insights</Text>
         <Text style={styles.headerSubtitle}>AI-powered pattern analysis</Text>
@@ -96,7 +118,14 @@ export default function Insights() {
       <ScrollView
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#6366F1" />}
+        keyboardShouldPersistTaps="handled"
       >
+        <View style={styles.actionsRow}>
+          <TouchableOpacity style={styles.actionButton} onPress={openHealthReport}>
+            <Ionicons name="document-text" size={18} color="#FDE68A" />
+            <Text style={styles.actionButtonText}>Open Health Report (PDF)</Text>
+          </TouchableOpacity>
+        </View>
         {insights && (
           <>
             {/* Stats Cards */}
@@ -123,7 +152,7 @@ export default function Insights() {
                 <View style={[styles.statIcon, { backgroundColor: '#10B98120' }]}>
                   <Ionicons name="happy" size={24} color="#10B981" />
                 </View>
-                <Text style={styles.statValue}>{insights.stress_free_days}</Text>
+                <Text style={styles.statValue}>{insights.stress_free_days || 0}</Text>
                 <Text style={styles.statLabel}>Stress-Free</Text>
                 <Text style={styles.statPeriod}>Days</Text>
               </View>
@@ -187,13 +216,15 @@ export default function Insights() {
             </View>
 
             {/* AI Insights Card */}
-            <View style={styles.aiInsightsCard}>
-              <View style={styles.cardHeader}>
-                <Ionicons name="sparkles" size={24} color="#F59E0B" />
-                <Text style={styles.cardTitle}>AI Insights</Text>
+            {insights.ai_insights && (
+              <View style={styles.aiInsightsCard}>
+                <View style={styles.cardHeader}>
+                  <Ionicons name="sparkles" size={24} color="#F59E0B" />
+                  <Text style={styles.cardTitle}>AI Insights</Text>
+                </View>
+                <MarkdownText content={insights.ai_insights} variant="light" />
               </View>
-              <Text style={styles.aiInsightsText}>{insights.ai_insights}</Text>
-            </View>
+            )}
 
             {/* Streaks Card */}
             {insights.stress_free_days >= 5 && (
@@ -234,39 +265,65 @@ export default function Insights() {
           </>
         )}
       </ScrollView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F172A',
+  },
+  safeArea: {
+    flex: 1,
   },
   centerContainer: {
     flex: 1,
-    backgroundColor: '#0F172A',
     alignItems: 'center',
     justifyContent: 'center',
   },
   header: {
-    paddingHorizontal: 24,
+    paddingHorizontal: spacing.screenPadding,
     paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#1E293B',
+    borderBottomColor: 'rgba(148, 163, 184, 0.1)',
   },
   headerTitle: {
     fontSize: 28,
     fontWeight: 'bold',
-    color: '#F1F5F9',
+    color: colors.textPrimary,
   },
   headerSubtitle: {
     fontSize: 14,
-    color: '#94A3B8',
+    color: colors.textMuted,
     marginTop: 4,
   },
   content: {
-    padding: 16,
+    paddingHorizontal: spacing.screenPadding,
+    paddingTop: 16,
+    paddingBottom: 96,
+  },
+  actionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    marginBottom: 12,
+    gap: 12,
+  },
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#1E293B',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  actionButtonText: {
+    color: '#FDE68A',
+    fontSize: 14,
+    fontWeight: '600',
   },
   statsGrid: {
     flexDirection: 'row',
@@ -276,10 +333,12 @@ const styles = StyleSheet.create({
   },
   statCard: {
     width: '48%',
-    backgroundColor: '#1E293B',
-    borderRadius: 12,
+    backgroundColor: colors.surfaceBg,
+    borderRadius: spacing.cardRadius,
     padding: 16,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
   statIcon: {
     width: 48,
@@ -292,24 +351,26 @@ const styles = StyleSheet.create({
   statValue: {
     fontSize: 32,
     fontWeight: 'bold',
-    color: '#F1F5F9',
+    color: colors.textPrimary,
     marginBottom: 4,
   },
   statLabel: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#94A3B8',
+    color: colors.textSecondary,
   },
   statPeriod: {
     fontSize: 12,
-    color: '#64748B',
+    color: colors.textMuted,
     marginTop: 2,
   },
   trendsCard: {
-    backgroundColor: '#1E293B',
-    borderRadius: 12,
+    backgroundColor: colors.surfaceBg,
+    borderRadius: spacing.cardRadius,
     padding: 16,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
   cardHeader: {
     flexDirection: 'row',
@@ -320,7 +381,7 @@ const styles = StyleSheet.create({
   cardTitle: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#F1F5F9',
+    color: colors.textPrimary,
   },
   trendItem: {
     flexDirection: 'row',
@@ -335,7 +396,7 @@ const styles = StyleSheet.create({
   },
   trendLabel: {
     fontSize: 15,
-    color: '#F1F5F9',
+    color: colors.textSecondary,
   },
   trendValue: {
     fontSize: 13,
@@ -343,11 +404,11 @@ const styles = StyleSheet.create({
   },
   trendDivider: {
     height: 1,
-    backgroundColor: '#334155',
+    backgroundColor: 'rgba(148, 163, 184, 0.15)',
   },
   aiInsightsCard: {
-    backgroundColor: '#1E293B',
-    borderRadius: 12,
+    backgroundColor: colors.surfaceBg,
+    borderRadius: spacing.cardRadius,
     padding: 16,
     marginBottom: 16,
     borderWidth: 2,
@@ -361,7 +422,7 @@ const styles = StyleSheet.create({
   streakCard: {
     flexDirection: 'row',
     backgroundColor: '#F59E0B20',
-    borderRadius: 12,
+    borderRadius: spacing.cardRadius,
     padding: 16,
     marginBottom: 16,
     borderWidth: 2,
@@ -381,13 +442,15 @@ const styles = StyleSheet.create({
   },
   streakText: {
     fontSize: 14,
-    color: '#F1F5F9',
+    color: colors.textSecondary,
     lineHeight: 20,
   },
   tipsCard: {
-    backgroundColor: '#1E293B',
-    borderRadius: 12,
+    backgroundColor: colors.surfaceBg,
+    borderRadius: spacing.cardRadius,
     padding: 16,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
   tipsList: {
     gap: 12,
@@ -400,7 +463,7 @@ const styles = StyleSheet.create({
   tipText: {
     flex: 1,
     fontSize: 14,
-    color: '#94A3B8',
+    color: colors.textSecondary,
     lineHeight: 20,
   },
 });

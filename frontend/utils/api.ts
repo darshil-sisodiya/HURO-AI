@@ -51,3 +51,106 @@ if (__DEV__) {
   // eslint-disable-next-line no-console
   console.log('[API] Using base URL:', API_BASE_URL || '(empty)');
 }
+
+// ==================== TYPES ====================
+
+export interface PrescriptionAnalysis {
+  id: string;
+  user_id: string;
+  medication_name: string;
+  dosage?: string;
+  frequency?: string;
+  timing?: string;
+  purpose?: string;
+  side_effects?: string;
+  interactions?: string;
+  personalized_advice?: string;
+  extracted_text: string;
+  ai_analysis: string;
+  created_at: string;
+}
+
+// ==================== PRESCRIPTION API ====================
+
+export const uploadPrescription = async (token: string, imageUri: string): Promise<PrescriptionAnalysis> => {
+  try {
+    // Create form data
+    const formData = new FormData();
+    
+    // Get file extension
+    const uriParts = imageUri.split('.');
+    const fileType = uriParts[uriParts.length - 1];
+    
+    // Append file to form data
+    const file = {
+      uri: imageUri,
+      name: `prescription.${fileType}`,
+      type: `image/${fileType}`,
+    } as any;
+    
+    formData.append('file', file);
+    
+    const response = await fetch(`${API_BASE_URL}/api/prescriptions/upload`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        // Don't set Content-Type, let fetch set it with boundary for multipart/form-data
+      },
+      body: formData,
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to upload prescription');
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('Upload prescription error:', error);
+    throw error;
+  }
+};
+
+export const getPrescriptionHistory = async (token: string, limit: number = 20): Promise<PrescriptionAnalysis[]> => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/prescriptions/history?limit=${limit}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to fetch prescription history');
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('Get prescription history error:', error);
+    throw error;
+  }
+};
+
+export const getPrescription = async (token: string, prescriptionId: string): Promise<PrescriptionAnalysis> => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/prescriptions/${prescriptionId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to fetch prescription');
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('Get prescription error:', error);
+    throw error;
+  }
+};

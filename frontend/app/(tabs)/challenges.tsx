@@ -16,6 +16,9 @@ import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
 import { API_BASE_URL } from '../../utils/api';
 import { format, differenceInDays } from 'date-fns';
+import { MarkdownText } from '../../components/MarkdownText';
+import { LinearGradient } from 'expo-linear-gradient';
+import { colors, spacing } from '../../constants/theme';
 
 const BACKEND_URL = API_BASE_URL;
 
@@ -174,7 +177,7 @@ export default function Challenges() {
         </View>
         <View style={styles.challengeContent}>
           <Text style={styles.challengeTitle}>{challenge.title}</Text>
-          <Text style={styles.challengeDescription}>{challenge.description}</Text>
+          <MarkdownText content={challenge.description} variant="light" />
 
           <View style={styles.progressContainer}>
             <View style={styles.progressBar}>
@@ -224,14 +227,21 @@ export default function Challenges() {
 
   if (isLoading) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color="#6366F1" />
-      </View>
+      <LinearGradient
+        colors={colors.backgroundGradient}
+        style={styles.centerContainer}
+      >
+        <ActivityIndicator size="large" color={colors.accentPrimary} />
+      </LinearGradient>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <LinearGradient
+      colors={colors.backgroundGradient}
+      style={styles.container}
+    >
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Challenges</Text>
         <TouchableOpacity onPress={() => setModalVisible(true)}>
@@ -239,7 +249,10 @@ export default function Challenges() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView 
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+      >
         {challenges.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Ionicons name="trophy-outline" size={64} color="#475569" />
@@ -326,18 +339,22 @@ export default function Challenges() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+      </SafeAreaView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F172A',
+    backgroundColor: '#030712',
+  },
+  safeArea: {
+    flex: 1,
   },
   centerContainer: {
     flex: 1,
-    backgroundColor: '#0F172A',
+    backgroundColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -345,7 +362,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: spacing.screenPadding,
     paddingVertical: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#1E293B',
@@ -356,7 +373,8 @@ const styles = StyleSheet.create({
     color: '#F1F5F9',
   },
   content: {
-    padding: 16,
+    padding: spacing.screenPadding,
+    paddingBottom: 100,
     flexGrow: 1,
   },
   emptyContainer: {
@@ -390,10 +408,12 @@ const styles = StyleSheet.create({
   },
   challengeCard: {
     flexDirection: 'row',
-    backgroundColor: '#1E293B',
-    borderRadius: 16,
+    backgroundColor: colors.surfaceBg,
+    borderRadius: spacing.cardRadius,
     padding: 16,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
   challengeIcon: {
     width: 64,

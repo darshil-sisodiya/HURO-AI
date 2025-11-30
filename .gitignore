@@ -1,28 +1,35 @@
-﻿# Node/Expo
+﻿### Root .gitignore — single source of truth ###
+
+# Node / Expo (frontend)
 frontend/node_modules/
 frontend/.expo/
 frontend/.expo-shared/
+frontend/.cache/
+frontend/.metro/
+frontend/metro-cache/
 frontend/dist/
 frontend/.next/
-frontend/.cache/
+frontend/web-build/
+frontend/expo-env.d.ts
 
-# Python
+# Python (backend)
 backend/.venv/
+backend/venv/
 backend/__pycache__/
 backend/.pytest_cache/
 backend/.mypy_cache/
 
-# Env files (DO NOT COMMIT)
+# Environment files (DO NOT COMMIT)
 frontend/.env
 backend/.env
 
-# OS/editor junk
+# OS / editor junk
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 *.log
 
-# Build artefacts
+# Build artefacts (generic)
 dist/
 build/

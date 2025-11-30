@@ -7,6 +7,8 @@ import {
   TouchableOpacity,
   Alert,
   ActivityIndicator,
+  Linking,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,6 +16,9 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useRouter } from 'expo-router';
 import axios from 'axios';
 import { API_BASE_URL } from '../../utils/api';
+import { MarkdownText } from '../../components/MarkdownText';
+import { LinearGradient } from 'expo-linear-gradient';
+import { colors, spacing } from '../../constants/theme';
 
 interface HealthProfile {
   sleep_pattern: string;
@@ -31,6 +36,7 @@ export default function Profile() {
   const router = useRouter();
   const [profile, setProfile] = useState<HealthProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
 
   useEffect(() => {
     loadProfile();
@@ -48,6 +54,42 @@ export default function Profile() {
       console.error('Error loading profile:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleGenerateReport = async () => {
+    setIsGeneratingReport(true);
+    try {
+      // Encode the token to make it URL-safe
+      const encodedToken = encodeURIComponent(token || '');
+      
+      // Create URL with token as query parameter for the backend to accept
+      const pdfUrl = `${API_BASE_URL}/api/health/generate-report?token=${encodedToken}`;
+      
+      // Try to open the URL in browser/PDF viewer
+      const canOpen = await Linking.canOpenURL(pdfUrl);
+      
+      if (canOpen) {
+        await Linking.openURL(pdfUrl);
+        Alert.alert('Success', 'Opening your health report...');
+      } else {
+        // Fallback: show URL to user
+        Alert.alert(
+          'Report Ready',
+          'Your health report is ready. Please copy this URL and open it in your browser:\n\n' + pdfUrl,
+          [
+            {
+              text: 'OK',
+              onPress: () => console.log('PDF URL:', pdfUrl)
+            }
+          ]
+        );
+      }
+    } catch (error: any) {
+      console.error('Error generating report:', error);
+      Alert.alert('Error', 'Failed to generate health report. Please try again.');
+    } finally {
+      setIsGeneratingReport(false);
     }
   };
 
@@ -76,19 +118,29 @@ export default function Profile() {
 
   if (isLoading) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color="#6366F1" />
-      </View>
+      <LinearGradient
+        colors={colors.backgroundGradient}
+        style={styles.centerContainer}
+      >
+        <ActivityIndicator size="large" color={colors.accentPrimary} />
+      </LinearGradient>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <LinearGradient
+      colors={colors.backgroundGradient}
+      style={styles.container}
+    >
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Profile</Text>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView 
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={styles.profileCard}>
           <View style={styles.avatarContainer}>
             <View style={styles.avatar}>
@@ -104,7 +156,7 @@ export default function Profile() {
               <Ionicons name="sparkles" size={24} color="#F59E0B" />
               <Text style={styles.personaTitle}>Your Health Persona</Text>
             </View>
-            <Text style={styles.personaText}>{profile.health_persona}</Text>
+            <MarkdownText content={profile.health_persona} variant="light" />
           </View>
         )}
 
@@ -159,6 +211,23 @@ export default function Profile() {
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Actions</Text>
+          
+          <TouchableOpacity 
+            style={styles.actionButton} 
+            onPress={handleGenerateReport}
+            disabled={isGeneratingReport}
+          >
+            <Ionicons name="document-text-outline" size={24} color="#6366F1" />
+            <Text style={[styles.actionButtonText, { color: '#6366F1' }]}>
+              {isGeneratingReport ? 'Generating Report...' : 'Generate Health Report'}
+            </Text>
+            {isGeneratingReport ? (
+              <ActivityIndicator size="small" color="#6366F1" />
+            ) : (
+              <Ionicons name="chevron-forward" size={20} color="#64748B" />
+            )}
+          </TouchableOpacity>
+
           <TouchableOpacity style={styles.actionButton} onPress={handleLogout}>
             <Ionicons name="log-out-outline" size={24} color="#EF4444" />
             <Text style={styles.actionButtonText}>Logout</Text>
@@ -166,23 +235,27 @@ export default function Profile() {
           </TouchableOpacity>
         </View>
       </ScrollView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F172A',
+    backgroundColor: '#030712',
+  },
+  safeArea: {
+    flex: 1,
   },
   centerContainer: {
     flex: 1,
-    backgroundColor: '#0F172A',
+    backgroundColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
   },
   header: {
-    paddingHorizontal: 24,
+    paddingHorizontal: spacing.screenPadding,
     paddingVertical: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#1E293B',
@@ -193,14 +266,17 @@ const styles = StyleSheet.create({
     color: '#F1F5F9',
   },
   content: {
-    padding: 16,
+    padding: spacing.screenPadding,
+    paddingBottom: 100,
   },
   profileCard: {
-    backgroundColor: '#1E293B',
-    borderRadius: 16,
+    backgroundColor: colors.surfaceBg,
+    borderRadius: spacing.cardRadius,
     padding: 24,
     alignItems: 'center',
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
   avatarContainer: {
     marginBottom: 16,
@@ -221,8 +297,8 @@ const styles = StyleSheet.create({
     color: '#F1F5F9',
   },
   personaCard: {
-    backgroundColor: '#1E293B',
-    borderRadius: 16,
+    backgroundColor: colors.surfaceBg,
+    borderRadius: spacing.cardRadius,
     padding: 20,
     marginBottom: 16,
     borderWidth: 2,
@@ -264,11 +340,13 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   infoCard: {
-    backgroundColor: '#1E293B',
-    borderRadius: 12,
+    backgroundColor: colors.surfaceBg,
+    borderRadius: spacing.cardRadius,
     padding: 16,
     width: '48%',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
   infoLabel: {
     fontSize: 12,
@@ -286,9 +364,12 @@ const styles = StyleSheet.create({
   actionButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1E293B',
-    borderRadius: 12,
+    backgroundColor: colors.surfaceBg,
+    borderRadius: spacing.cardRadius,
     padding: 16,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    marginBottom: 12,
   },
   actionButtonText: {
     flex: 1,

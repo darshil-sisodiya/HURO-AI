@@ -9,12 +9,18 @@ import {
   TextInput,
   Alert,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
 import { API_BASE_URL } from '../../utils/api';
+import { LinearGradient } from 'expo-linear-gradient';
+import { GlassCard } from '../../components/GlassCard';
+import { MarkdownText } from '../../components/MarkdownText';
+import { colors, spacing } from '../../constants/theme';
 
 const BACKEND_URL = API_BASE_URL;
 
@@ -41,7 +47,6 @@ export default function BodyMap() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<any>(null);
   const [resultModalVisible, setResultModalVisible] = useState(false);
-
   const handleBodyPartPress = (partId: string) => {
     setSelectedPart(partId);
     setModalVisible(true);
@@ -92,13 +97,20 @@ export default function BodyMap() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <LinearGradient
+      colors={colors.backgroundGradient}
+      style={styles.container}
+    >
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Body Map</Text>
         <Text style={styles.headerSubtitle}>Tap where it hurts</Text>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView 
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={styles.bodyContainer}>
           <View style={styles.bodyOutline}>
             {/* Front View */}
@@ -113,7 +125,7 @@ export default function BodyMap() {
                       styles.bodyPart,
                       {
                         top: part.position.top,
-                        left: part.position.left,
+                        left: part.position.left as any,
                       },
                     ]}
                     onPress={() => handleBodyPartPress(part.id)}
@@ -179,7 +191,10 @@ export default function BodyMap() {
 
       {/* Symptom Input Modal */}
       <Modal visible={modalVisible} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView 
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
@@ -236,21 +251,28 @@ export default function BodyMap() {
             />
 
             <TouchableOpacity
-              style={styles.analyzeButton}
               onPress={handleAnalyze}
               disabled={isAnalyzing}
+              activeOpacity={0.8}
             >
-              {isAnalyzing ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <>
-                  <Ionicons name="sparkles" size={20} color="#FFFFFF" />
-                  <Text style={styles.analyzeButtonText}>Get AI Analysis</Text>
-                </>
-              )}
+              <LinearGradient
+                colors={['#6366F1', '#8B5CF6']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.analyzeButton}
+              >
+                {isAnalyzing ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <>
+                    <Ionicons name="sparkles" size={20} color="#FFFFFF" />
+                    <Text style={styles.analyzeButtonText}>Get AI Analysis</Text>
+                  </>
+                )}
+              </LinearGradient>
             </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Analysis Result Modal */}
@@ -288,7 +310,7 @@ export default function BodyMap() {
                 </View>
 
                 <View style={styles.analysisContent}>
-                  <Text style={styles.analysisText}>{analysisResult.analysis}</Text>
+                  <MarkdownText content={analysisResult.analysis} variant="dark" />
                 </View>
 
                 <View style={styles.disclaimerCard}>
@@ -303,17 +325,21 @@ export default function BodyMap() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+      </SafeAreaView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F172A',
+    backgroundColor: '#030712',
+  },
+  safeArea: {
+    flex: 1,
   },
   header: {
-    paddingHorizontal: 24,
+    paddingHorizontal: spacing.screenPadding,
     paddingVertical: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#1E293B',
@@ -329,14 +355,17 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   content: {
-    padding: 16,
+    padding: spacing.screenPadding,
+    paddingBottom: 100,
     flexGrow: 1,
   },
   bodyContainer: {
-    backgroundColor: '#1E293B',
-    borderRadius: 16,
+    backgroundColor: colors.surfaceBg,
+    borderRadius: spacing.cardRadius,
     padding: 24,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
   bodyOutline: {
     flexDirection: 'row',
@@ -403,10 +432,12 @@ const styles = StyleSheet.create({
   },
   infoCard: {
     flexDirection: 'row',
-    backgroundColor: '#1E293B',
-    borderRadius: 12,
+    backgroundColor: colors.surfaceBg,
+    borderRadius: spacing.cardRadius,
     padding: 16,
     gap: 12,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
   infoText: {
     flex: 1,
@@ -478,17 +509,21 @@ const styles = StyleSheet.create({
   },
   analyzeButton: {
     flexDirection: 'row',
-    backgroundColor: '#6366F1',
     borderRadius: 12,
     height: 56,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 5,
   },
   analyzeButtonText: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   severityBanner: {
     flexDirection: 'row',
@@ -507,11 +542,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 16,
     marginBottom: 16,
-  },
-  analysisText: {
-    fontSize: 15,
-    color: '#F1F5F9',
-    lineHeight: 24,
+    borderWidth: 1,
+    borderColor: '#334155',
   },
   disclaimerCard: {
     flexDirection: 'row',
